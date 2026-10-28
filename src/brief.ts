@@ -345,12 +345,15 @@ const ask = async <T>(opts: {
 
 // --- the two steps ---
 
+/** Exactly what step 1 sends the model as the user message (`me` rides in the system prompt). */
+export const briefInput = ({ today, messages }: Scenario) => ({ today, messages })
+
 /** Step 1: find conflicts, needs and open promises across every conversation. */
 export const analyzeChats = (scenario: Scenario, onProgress: OnProgress = () => {}) =>
   ask<Brief>({
     label: 'brief',
     system: analysisPrompt(scenario),
-    user: JSON.stringify({ today: scenario.today, messages: scenario.messages }),
+    user: JSON.stringify(briefInput(scenario)),
     schema: BRIEF_SCHEMA,
     check: (v) => validateBrief(v) ?? checkCoverage(v as Brief, scenario),
     onProgress,

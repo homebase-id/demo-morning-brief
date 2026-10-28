@@ -3,16 +3,22 @@ import './App.css'
 import { FINALIZE_PATH, finalizeLogin, getIdentity, hasCredentials, logout, verifyToken } from './auth/auth'
 import { Login } from './auth/Login'
 import { BriefPage } from './BriefPage'
-import { MOCK_MODE } from './config'
+import { DATA_SOURCE, type DataSource } from './config'
+import { displayName } from './scenario'
 
 type AuthState = 'checking' | 'anonymous' | 'authenticated' | 'finalizing'
 
-function App() {
-  return MOCK_MODE ? <BriefPage /> : <LiveApp />
+const SOURCE_KEY = 'morning-brief:data-source'
+
+const initialSource = (): DataSource => {
+  // Coming back from the Homebase sign-in only makes sense in live mode.
+  if (window.location.pathname === FINALIZE_PATH) return 'live'
+  const saved = localStorage.getItem(SOURCE_KEY)
+  return saved === 'mock' || saved === 'live' ? saved : DATA_SOURCE
 }
 
-/** Live Homebase chat needs a login first; mock mode skips straight to the brief. */
-function LiveApp() {
+/** Homebase sign-in state: finishes a YouAuth return, otherwise checks the stored token. */
+function useHomebaseAuth() {
   const isFinalize = window.location.pathname === FINALIZE_PATH
   const [state, setState] = useState<AuthState>(
     isFinalize ? 'finalizing' : hasCredentials() ? 'checking' : 'anonymous',
@@ -53,33 +59,88 @@ function LiveApp() {
     }
   }, [isFinalize])
 
-  const onLogout = async () => {
+  const signOut = async () => {
     await logout()
     setState('anonymous')
   }
 
+  return { state, error, signOut, needSignIn: () => setState('anonymous') }
+}
+
+function SourceToggle({ source, onChange }: { source: DataSource; onChange: (s: DataSource) => void }) {
+  return (
+    <div className="source-toggle" role="group" aria-label="Data source">
+      {(['mock', 'live'] as const).map((s) => (
+        <button key={s} type="button" aria-pressed={source === s} onClick={() => onChange(s)}>
+          {s === 'mock' ? 'Mock' : 'Live'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Avatar + display name of the signed-in identity, from its public profile. */
+function IdentityBadge({ odinId, onSignOut }: { odinId: string; onSignOut: () => void }) {
+  const [name, setName] = useState(odinId)
+  const [avatarFailed, setAvatarFailed] = useState(false)
+
+  useEffect(() => {
+    displayName(odinId).then(setName)
+  }, [odinId])
+
+  return (
+    <div className="identity">
+      {avatarFailed ? (
+        <span className="avatar avatar-initial" aria-hidden>
+          {name.charAt(0).toUpperCase()}
+        </span>
+      ) : (
+        <img className="avatar" src={`https://${odinId}/pub/image`} alt="" onError={() => setAvatarFailed(true)} />
+      )}
+      <span className="identity-text">
+        <span className="identity-name">{name}</span>
+        <span className="identity-id">{odinId}</span>
+      </span>
+      <button type="button" className="sign-out" onClick={onSignOut}>
+        Sign out
+      </button>
+    </div>
+  )
+}
+
+function App() {
+  const [source, setSource] = useState<DataSource>(initialSource)
+  const auth = useHomebaseAuth()
+  const identity = auth.state === 'authenticated' ? getIdentity() : undefined
+
+  const choose = (s: DataSource) => {
+    localStorage.setItem(SOURCE_KEY, s)
+    setSource(s)
+  }
+
+  const live = () => {
+    if (auth.state === 'checking' || auth.state === 'finalizing')
+      return (
+        <section className="login">
+          <p>{auth.state === 'finalizing' ? 'Finishing login…' : 'Loading…'}</p>
+        </section>
+      )
+    if (auth.state === 'anonymous') return <Login error={auth.error} />
+    return (
+      <BriefPage key="live" source="live" onSwitchToMock={() => choose('mock')} onNeedSignIn={auth.needSignIn} />
+    )
+  }
+
   return (
     <>
-      {state === 'checking' || state === 'finalizing' ? (
-        <section className="login">
-          <p>{state === 'finalizing' ? 'Finishing login…' : 'Loading…'}</p>
-        </section>
-      ) : state === 'anonymous' ? (
-        <Login error={error} />
-      ) : (
-        <>
-          <section className="login">
-            <h1>Morning Brief</h1>
-            <p>
-              Signed in as <code>{getIdentity()}</code>
-            </p>
-            <button type="button" className="counter" onClick={onLogout}>
-              Log out
-            </button>
-          </section>
-          <BriefPage />
-        </>
-      )}
+      <header className="app-header">
+        <div className="header-left">
+          <strong className="app-title">Morning Brief</strong>
+          <SourceToggle source={source} onChange={choose} />
+        </div>
+        {identity && <IdentityBadge odinId={identity} onSignOut={auth.signOut} />}
+      </header>
+      {source === 'mock' ? <BriefPage key="mock" source="mock" /> : live()}
     </>
   )
 }

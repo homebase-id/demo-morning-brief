@@ -5,5 +5,8 @@ export const OLLAMA_URL: string =
 export const OLLAMA_MODEL: string =
   import.meta.env?.VITE_OLLAMA_MODEL ?? 'qwen3.5:9b'
 
-/** true: the brief reads src/fixtures/scenario-lotr.json. false: live Homebase chat. */
-export const MOCK_MODE: boolean = (import.meta.env?.VITE_MOCK_MODE ?? 'true') !== 'false'
+/** mock: src/fixtures/scenario-lotr.json. live: the signed-in identity's Homebase chat. */
+export type DataSource = 'mock' | 'live'
+
+/** The starting source; the header toggle overrides it and remembers the choice. */
+export const DATA_SOURCE: DataSource = import.meta.env?.VITE_DATA_SOURCE === 'mock' ? 'mock' : 'live'

@@ -280,3 +280,34 @@
     color: var(--text);
   }
 }
+
+.input-panel {
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+
+  summary {
+    cursor: pointer;
+  }
+
+  p {
+    margin-top: 8px;
+  }
+
+  pre {
+    margin: 8px 0 0;
+    padding: 8px;
+    max-height: 420px;
+    overflow: auto;
+    background: var(--code-bg);
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+  }
+}
+
+.input-note {
+  opacity: 0.75;
+}

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import {
   analyzeChats,
+  briefInput,
+  formatToday,
   draftReply,
   warmModel,
   type AskResult,
@@ -10,8 +12,8 @@ import {
   type Progress,
   type Urgency,
 } from './brief'
-import { OLLAMA_MODEL } from './config'
-import { loadScenario, type BriefMessage, type Scenario } from './scenario'
+import { OLLAMA_MODEL, type DataSource } from './config'
+import { loadScenario, ScenarioError, type BriefMessage, type Scenario, type ScenarioErrorKind } from './scenario'
 import './BriefPage.css'
 
 const URGENCY_ORDER: Record<Urgency, number> = { today: 0, soon: 1, fyi: 2 }
@@ -51,7 +53,7 @@ function StatusLog({ steps, running }: { steps: Progress[]; running: boolean }) 
   )
 }
 
-function Sources({ ids, messages }: { ids: string[]; messages: BriefMessage[] }) {
+function Sources({ ids, messages, real }: { ids: string[]; messages: BriefMessage[]; real?: Scenario['sources'] }) {
   if (!ids.length) return null
   return (
     <details className="sources">
@@ -59,9 +61,9 @@ function Sources({ ids, messages }: { ids: string[]; messages: BriefMessage[] })
       {ids.map((id) => {
         const m = messages.find((msg) => msg.id === id)
         return m ? (
-          <blockquote key={id}>
+          <blockquote key={id} title={real?.[id] ? `chat file ${real[id].fileId}` : undefined}>
             <span className="source-meta">
-              {m.from.name} · {m.conversation} · {new Date(m.sentAt).toLocaleString()}
+              {id} · {m.from.name} · {m.conversation} · {new Date(m.sentAt).toLocaleString()}
             </span>
             {m.text}
           </blockquote>
@@ -75,7 +77,7 @@ function Sources({ ids, messages }: { ids: string[]; messages: BriefMessage[] })
   )
 }
 
-function ConflictBanner({ conflict, messages }: { conflict: Conflict; messages: BriefMessage[] }) {
+function ConflictBanner({ conflict, messages, real }: { conflict: Conflict; messages: BriefMessage[]; real?: Scenario['sources'] }) {
   return (
     <section className="conflict" role="alert">
       <p className="conflict-summary">
@@ -88,7 +90,7 @@ function ConflictBanner({ conflict, messages }: { conflict: Conflict; messages: 
             <span>{e.what}</span>
             {e.where && <span>📍 {e.where}</span>}
             <span>🕕 {e.time}</span>
-            <Sources ids={e.sourceIds} messages={messages} />
+            <Sources ids={e.sourceIds} messages={messages} real={real} />
           </div>
         ))}
       </div>
@@ -125,12 +127,14 @@ function DraftArea({ text }: { text: string }) {
 function PersonCard({
   item,
   messages,
+  real,
   draft,
   onDraft,
   busy,
 }: {
   item: BriefItem
   messages: BriefMessage[]
+  real?: Scenario['sources']
   draft?: DraftState
   onDraft: () => void
   busy: boolean
@@ -158,7 +162,7 @@ function PersonCard({
       <p className="how">
         <strong>How I know:</strong> {item.howIKnow}
       </p>
-      <Sources ids={item.sourceIds} messages={messages} />
+      <Sources ids={item.sourceIds} messages={messages} real={real} />
 
       {draft?.status === 'drafting' && (
         <StatusLog steps={[draft.progress ?? { step: 'Drafting' }]} running />
@@ -176,13 +180,37 @@ function PersonCard({
   )
 }
 
-export function BriefPage() {
+function InputPanel({ scenario }: { scenario: Scenario }) {
+  return (
+    <details className="input-panel">
+      <summary>
+        Input — {scenario.messages.length} messages · {scenario.me.name} ({scenario.me.id}) · {scenario.today}
+      </summary>
+      <p>
+        <strong>me:</strong> {scenario.me.name} ({scenario.me.id}) · <strong>today:</strong> {scenario.today} (
+        {formatToday(scenario.today)}) · <strong>messages:</strong> {scenario.messages.length}
+      </p>
+      <p className="input-note">Sent to the model exactly as below:</p>
+      <pre>{JSON.stringify(briefInput(scenario), null, 2)}</pre>
+    </details>
+  )
+}
+
+export function BriefPage({
+  source,
+  onSwitchToMock,
+  onNeedSignIn,
+}: {
+  source: DataSource
+  onSwitchToMock?: () => void
+  onNeedSignIn?: () => void
+}) {
   const [model, setModel] = useState<ModelState>('warming')
   const [loading, setLoading] = useState(false)
   const [steps, setSteps] = useState<Progress[]>([])
   const [scenario, setScenario] = useState<Scenario>()
   const [result, setResult] = useState<AskResult<Brief>>()
-  const [error, setError] = useState<string>()
+  const [error, setError] = useState<{ kind: ScenarioErrorKind | 'other'; message: string }>()
   const [drafts, setDrafts] = useState<Record<string, DraftState>>({})
   const [drafting, setDrafting] = useState(false)
 
@@ -209,7 +237,8 @@ export function BriefPage() {
     setError(undefined)
     try {
       onProgress({ step: 'Reading your chats' })
-      const s = await loadScenario()
+      const s = await loadScenario(source)
+      console.log('[brief] input', { me: s.me, count: s.messages.length, ...briefInput(s) })
       const conversations = new Set(s.messages.map((m) => m.conversation)).size
       onProgress({ step: 'Reading your chats', detail: `${s.messages.length} messages from ${conversations} conversations` })
       setScenario(s)
@@ -220,7 +249,12 @@ export function BriefPage() {
       setResult(r)
     } catch (e) {
       console.error(e)
-      setError(e instanceof Error ? e.message : String(e))
+      setError(
+        e instanceof ScenarioError
+          ? { kind: e.kind, message: e.message }
+          : { kind: 'other', message: e instanceof Error ? e.message : String(e) },
+      )
+      onProgress({ step: 'Stopped' })
     } finally {
       setLoading(false)
     }
@@ -263,7 +297,21 @@ export function BriefPage() {
       </button>
 
       {steps.length > 0 && <StatusLog steps={steps} running={loading} />}
-      {error && <p className="brief-error">{error}</p>}
+      {error && (
+        <section className="brief-error">
+          <p>{error.message}</p>
+          {error.kind === 'not-signed-in' && onNeedSignIn && (
+            <button type="button" className="secondary" onClick={onNeedSignIn}>
+              Sign in
+            </button>
+          )}
+          {(error.kind === 'read-failed' || error.kind === 'other') && source === 'live' && onSwitchToMock && (
+            <button type="button" className="secondary" onClick={onSwitchToMock}>
+              Switch to mock data
+            </button>
+          )}
+        </section>
+      )}
 
       {result && !result.ok && (
         <section className="brief-error">
@@ -276,7 +324,7 @@ export function BriefPage() {
         <>
           {brief.conflicts.length === 0 && <p className="no-conflicts">✅ No conflicts found.</p>}
           {brief.conflicts.map((c, i) => (
-            <ConflictBanner key={i} conflict={c} messages={messages} />
+            <ConflictBanner key={i} conflict={c} messages={messages} real={scenario?.sources} />
           ))}
 
           {items.length > 0 && (
@@ -295,6 +343,7 @@ export function BriefPage() {
               key={`${item.person}-${i}`}
               item={item}
               messages={messages}
+              real={scenario?.sources}
               draft={drafts[item.person]}
               onDraft={() => runDrafts(brief, [item])}
               busy={drafting}
@@ -303,6 +352,8 @@ export function BriefPage() {
           {brief.skipped.length > 0 && <p className="skipped">Skipped: {brief.skipped.join(' · ')}</p>}
         </>
       )}
+
+      {scenario && <InputPanel scenario={scenario} />}
     </main>
   )
 }

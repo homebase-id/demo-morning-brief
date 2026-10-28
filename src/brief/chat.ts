@@ -31,10 +31,18 @@ interface ConversationContent {
 
 type RichTextNode = { text?: string; children?: RichTextNode[] }
 
+export interface ChatConversation {
+  /** Explicit title (group chats); empty for a 1:1. */
+  title: string
+  /** Every recipient other than me. */
+  others: string[]
+}
+
 export interface ChatMessage {
   id: string
   conversationId: string
-  conversationTitle: string
+  /** Undefined when the conversation file couldn't be found or read. */
+  conversation?: ChatConversation
   /** Undefined when the identity itself sent it. */
   sender?: string
   sentAt: number
@@ -62,7 +70,7 @@ const readContent = <T>(client: DotYouClient, file: HomebaseFile) =>
     return null
   })
 
-const activeFiles = (client: DotYouClient, fileType: number, maxRecords: number) =>
+const activeFiles = (client: DotYouClient, fileType: number, maxRecords: number, uniqueIds?: string[]) =>
   queryBatch(
     client,
     {
@@ -70,35 +78,46 @@ const activeFiles = (client: DotYouClient, fileType: number, maxRecords: number)
       fileType: [fileType],
       // 0 = none, 1 = archived; 2 is chat-kmp's soft-delete (ARCHIVAL_STATUS_DELETED).
       archivalStatus: [0, 1],
+      clientUniqueIdAtLeastOne: uniqueIds,
     },
     { maxRecords, includeMetadataHeader: true, ordering: 'newestFirst', sorting: 'userDate' },
   ).then((r) => r.searchResults)
 
-const conversationTitles = async (client: DotYouClient, identity: string) => {
-  const files = await activeFiles(client, ConversationFileType, 500)
-  const titles = new Map<string, string>()
+const normalizeId = (id: string) => id.replace(/-/g, '').toLowerCase()
+
+/** The conversation files for these conversation ids (a conversation's uniqueId is its id). */
+const readConversations = async (client: DotYouClient, identity: string, ids: string[]) => {
+  const conversations = new Map<string, ChatConversation>()
+  if (!ids.length) return conversations
+  const files = await activeFiles(client, ConversationFileType, ids.length, ids)
   await Promise.all(
     files.map(async (file) => {
       const id = file.fileMetadata.appData.uniqueId
       if (!id) return
       const c = await readContent<ConversationContent>(client, file)
-      const others = (c?.recipients ?? []).filter((r): r is string => !!r && r !== identity)
-      titles.set(id.replace(/-/g, ''), c?.title?.trim() || others.join(', ') || 'Note to self')
+      conversations.set(normalizeId(id), {
+        title: c?.title?.trim() ?? '',
+        others: (c?.recipients ?? []).filter((r): r is string => !!r && r !== identity),
+      })
     }),
   )
-  return titles
+  return conversations
 }
 
-/** Most recent messages across every conversation, newest first. */
-export const getLatestChatMessages = async (
+/** Messages from the last `days` days across every conversation, newest first, at most `max`. */
+export const getRecentChatMessages = async (
   client: DotYouClient,
   identity: string,
-  maxRecords = 50,
+  { days = 7, max = 60 } = {},
 ): Promise<ChatMessage[]> => {
-  const [files, titles] = await Promise.all([
-    activeFiles(client, MessageFileType, maxRecords),
-    conversationTitles(client, identity),
-  ])
+  const since = Date.now() - days * 24 * 60 * 60 * 1000
+  // Newest first, so the first `max` recent ones are all here; older ones are dropped below.
+  const files = (await activeFiles(client, MessageFileType, max * 2)).filter(
+    (f) => (f.fileMetadata.appData.userDate || f.fileMetadata.created) >= since,
+  )
+
+  const conversationIds = [...new Set(files.map((f) => f.fileMetadata.appData.groupId).filter((g): g is string => !!g))]
+  const conversations = await readConversations(client, identity, conversationIds)
 
   const messages = await Promise.all(
     files.map(async (file): Promise<ChatMessage> => {
@@ -107,7 +126,7 @@ export const getLatestChatMessages = async (
       return {
         id: file.fileId,
         conversationId,
-        conversationTitle: titles.get(conversationId.replace(/-/g, '')) ?? 'Unknown conversation',
+        conversation: conversations.get(normalizeId(conversationId)),
         sender: senderOdinId && senderOdinId !== identity ? senderOdinId : undefined,
         sentAt: appData.userDate || created,
         text: messageText(await readContent<MessageContent>(client, file)),
