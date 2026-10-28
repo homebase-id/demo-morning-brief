@@ -76,12 +76,22 @@ const activeFiles = (client: DotYouClient, fileType: number, maxRecords: number,
     {
       targetDrive: ChatDrive,
       fileType: [fileType],
+      // Active files only (odin-core FileState: 0 = deleted, 1 = active). chat-kmp deletes a
+      // message by soft-deleting the file, and the tombstone keeps its old text in the header,
+      // so without this filter deleted messages come back.
+      fileState: [1],
       // 0 = none, 1 = archived; 2 is chat-kmp's soft-delete (ARCHIVAL_STATUS_DELETED).
       archivalStatus: [0, 1],
       clientUniqueIdAtLeastOne: uniqueIds,
     },
     { maxRecords, includeMetadataHeader: true, ordering: 'newestFirst', sorting: 'userDate' },
-  ).then((r) => r.searchResults)
+    // js-lib sends short queries as GETs; a changing param means the browser can never answer
+    // from its cache with chats as they were before an edit.
+    { axiosConfig: { params: { fresh: Date.now() } } },
+  ).then((r) =>
+    // Drop only what's explicitly deleted, so a state sent as a number can't empty the list.
+    r.searchResults.filter((f): f is HomebaseFile => !['deleted', 0].includes(f.fileState as string | number)),
+  )
 
 const normalizeId = (id: string) => id.replace(/-/g, '').toLowerCase()
 
