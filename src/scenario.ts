@@ -41,7 +41,9 @@ export class ScenarioError extends Error {
 }
 
 const DAYS = 7
-const MAX_MESSAGES = 60
+// Sized for a ~30s brief on a 9B model: the answer grows with the number of people.
+const MAX_CONVERSATIONS = 4
+const MAX_MESSAGES = 30
 const NAME_TIMEOUT_MS = 3000
 
 const localDate = (d: Date) =>
@@ -107,7 +109,10 @@ const liveScenario = async (): Promise<Scenario> => {
 
   // Plain text only: typed kinds (polls, locations, call events) and status messages have a
   // non-zero dataType; empty text means nothing to read.
-  const usable = chats.filter((m) => m.dataType === 0 && m.text.trim()).slice(0, MAX_MESSAGES)
+  const plain = chats.filter((m) => m.dataType === 0 && m.text.trim())
+  // Newest first, so these are the most recently active conversations.
+  const recent = new Set([...new Set(plain.map((m) => m.conversationId))].slice(0, MAX_CONVERSATIONS))
+  const usable = plain.filter((m) => recent.has(m.conversationId)).slice(0, MAX_MESSAGES)
   if (!usable.length) throw new ScenarioError('no-chats', `No chat messages in the last ${DAYS} days.`)
 
   const me: Person = { name: await displayName(identity), id: identity }

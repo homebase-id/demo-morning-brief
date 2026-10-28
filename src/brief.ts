@@ -16,6 +16,8 @@ export interface Conflict {
   summary: string
   events: ConflictEvent[]
   suggestion: string
+  /** The person whose plan is kept; every other event in the conflict is dropped. */
+  keep: string
 }
 
 export interface BriefItem {
@@ -37,57 +39,82 @@ export interface Brief {
 
 export type AskResult<T> = { ok: true; value: T } | { ok: false; error: string; raw: string }
 
-/** One line of progress: a new `step`, or a `detail` update to the current one. */
-export type Progress = { step: string; detail?: string }
+/** One line of progress: a new `step`, or a `detail` update to the current one. `stream` is the
+ * model's reply so far, while it is being written. */
+export type Progress = { step: string; detail?: string; stream?: string }
 type OnProgress = (p: Progress) => void
 
 // --- schemas ---
 
 const str = { type: 'string' }
-const strArr = { type: 'array', items: str }
 
-const BRIEF_SCHEMA = {
-  type: 'object',
-  required: ['conflicts', 'items', 'skipped'],
-  properties: {
-    conflicts: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['when', 'summary', 'events', 'suggestion'],
-        properties: {
-          when: str,
-          summary: str,
-          suggestion: str,
-          events: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['person', 'what', 'time', 'sourceIds'],
-              properties: { person: str, what: str, where: str, time: str, sourceIds: strArr },
-            },
+/** A string the model must stop writing by `max` characters: a runaway cap, not a style rule. */
+const text = (max: number) => ({ type: 'string', maxLength: max })
+const list = (items: object, max: number) => ({ type: 'array', items, maxItems: max })
+const ids = list({ type: 'string', maxLength: 6 }, 3)
+
+/**
+ * The analysis schema, built per scenario so it bounds the answer: one card per person, named
+ * exactly, and a ceiling on every list and string. Ollama enforces this token by token, so the
+ * answer cannot run long, which keeps the brief near 30s and never cut off.
+ */
+const briefSchema = (scenario: Scenario) => {
+  const people = peopleToCover(scenario)
+  // An enum needs at least one value; with nobody to cover, any name is allowed and no cards are.
+  const anyone = (names: string[]) => (names.length ? { type: 'string', enum: names } : text(40))
+  return {
+    type: 'object',
+    required: ['conflicts', 'items', 'skipped'],
+    properties: {
+      conflicts: list(
+        {
+          type: 'object',
+          required: ['when', 'summary', 'events', 'suggestion', 'keep'],
+          properties: {
+            when: text(40),
+            summary: text(160),
+            suggestion: text(160),
+            keep: anyone(people),
+            events: list(
+              {
+                type: 'object',
+                required: ['person', 'what', 'time', 'sourceIds'],
+                properties: {
+                  person: anyone([...people, scenario.me.name]),
+                  what: text(70),
+                  where: text(50),
+                  time: text(40),
+                  sourceIds: ids,
+                },
+              },
+              2,
+            ),
           },
         },
-      },
-    },
-    items: {
-      type: 'array',
+        2,
+      ),
       items: {
-        type: 'object',
-        required: ['person', 'urgency', 'headline', 'needs', 'openPromises', 'howIKnow', 'sourceIds'],
-        properties: {
-          person: str,
-          urgency: { type: 'string', enum: ['today', 'soon', 'fyi'] },
-          headline: str,
-          needs: str,
-          openPromises: strArr,
-          howIKnow: str,
-          sourceIds: strArr,
-        },
+        ...list(
+          {
+            type: 'object',
+            required: ['person', 'urgency', 'headline', 'needs', 'openPromises', 'howIKnow', 'sourceIds'],
+            properties: {
+              person: anyone(people),
+              urgency: { type: 'string', enum: ['today', 'soon', 'fyi'] },
+              headline: text(100),
+              needs: text(120),
+              openPromises: list(text(80), 2),
+              howIKnow: text(100),
+              sourceIds: ids,
+            },
+          },
+          people.length,
+        ),
+        minItems: people.length,
       },
+      skipped: list(text(80), 2),
     },
-    skipped: strArr,
-  },
+  }
 }
 
 const DRAFT_SCHEMA = {
@@ -122,26 +149,48 @@ conversations; messages sent by ${me.name} show what they agreed to and promised
 1. List every event or commitment ${me.name} agreed to (who, what, where, when); resolve
    relative days like 'Friday' against today.
 2. Find CONFLICTS: commitments that overlap or are too close to attend both, considering places
-   and realistic travel time. Compare across ALL conversations.
-   For each conflict DECIDE which commitment ${me.name} keeps, and say so in the suggestion.
+   and realistic travel time. Compare across ALL conversations. List each clash ONCE, even
+   though it spans several conversations.
+   For each conflict DECIDE which commitment ${me.name} keeps: set "keep" to the person whose
+   plan is kept (exactly as written in that conflict's events), and explain it in the suggestion.
 3. Find open PROMISES ${me.name} made ('I'll bring…', 'I'll send…').
 4. Per person: what they need and urgency: 'today' (deadline today/overdue), 'soon' (7 days), 'fyi'.
    "items" must contain exactly one entry for EACH of these people, using these exact names:
    ${people.map((p) => JSON.stringify(p)).join(', ')}.
 5. Cite the message ids each point relies on.
+Keep every text field short: one plain sentence, under 20 words. Write compact JSON with no
+indentation or line breaks.
 Never invent facts. Respond with JSON only, matching the schema.`
 }
 
-const draftPrompt = ({ me, today }: Scenario, person: string) =>
+const draftPrompt = ({ me, today }: Scenario, person: string, decisions: string[]) =>
   `You write chat replies for ${me.name} (${me.id}). Today is ${formatToday(today)}. Times are local.
 Write ${me.name}'s next message to ${person}: short and warm, first person, 1–3 casual sentences,
 as a chat message. No greeting like "Dear", no sign-off, no signature.
-- Answer what ${person} needs, and mention ${me.name}'s open promises to them where relevant.
-- Follow the conflict decisions EXACTLY: if ${person}'s plan is the one kept, confirm it; if it
-  is the one dropped, apologise and offer a concrete alternative. Never accept a commitment a
-  decision says to drop.
+${decisions.length ? `${decisions.map((d) => `DECISION (must follow): ${d}`).join('\n')}\n` : ''}- Answer what ${person} needs, and mention ${me.name}'s open promises to them where relevant.
 - Never invent facts.
 Respond with JSON only, matching the schema.`
+
+/**
+ * What each conflict decided for this person, spelled out in plain words by code rather than left
+ * for the model to infer from the suggestion text.
+ */
+export const decisionsFor = ({ me }: Scenario, brief: Brief, person: string): string[] =>
+  brief.conflicts.flatMap((c) => {
+    const theirs = c.events.filter((e) => sameName(e.person, person))
+    if (!theirs.length || !c.keep) return []
+    const kept = sameName(c.keep, person)
+    const others = c.events.filter((e) => !sameName(e.person, person))
+    const describe = (e: ConflictEvent) => `${e.what}${e.where ? ` at ${e.where}` : ''} (${e.time})`
+    return theirs.map((e) =>
+      kept
+        ? `${me.name} IS going to ${describe(e)} with ${person}. Confirm it warmly.`
+        : `${me.name} is NOT going to ${describe(e)} with ${person}, because it clashes with ${others
+            .map((o) => `${describe(o)} with ${o.person}`)
+            .join(' and ')}. Apologise to ${person}, say why briefly, and offer a concrete alternative time. ` +
+          `Do NOT say ${me.name} will be there.`,
+    )
+  })
 
 // --- validation: hand checks of the schemas, returning the first problem found ---
 
@@ -163,7 +212,7 @@ export const validateBrief = (v: unknown): string | null => {
   if (!isStrArr(v.skipped)) return 'skipped must be an array of strings'
 
   for (const [i, c] of v.conflicts.entries()) {
-    const err = checkFields(c, `conflicts[${i}]`, ['when', 'summary', 'suggestion'])
+    const err = checkFields(c, `conflicts[${i}]`, ['when', 'summary', 'suggestion', 'keep'])
     if (err) return err
     const events = (c as Record<string, unknown>).events
     if (!Array.isArray(events)) return `conflicts[${i}].events must be an array`
@@ -196,19 +245,26 @@ export const sameName = (a: string, b: string) => {
   return !!x && !!y && (x.includes(y) || y.includes(x))
 }
 
-/** Checks the brief against the messages: everyone covered, and only real message ids cited. */
-const checkCoverage = (brief: Brief, scenario: Scenario): string | null => {
-  const missing = peopleToCover(scenario).filter((p) => !brief.items.some((i) => sameName(i.person, p)))
-  if (missing.length) return `"items" is missing an entry for ${missing.map((p) => JSON.stringify(p)).join(', ')}`
-
+/**
+ * Fixes what can be fixed in code rather than spending another model call on it (the demo has
+ * ~30s): unknown message ids are dropped, duplicate conflicts merged, and a `keep` that names
+ * nobody in its conflict is cleared, leaving that conflict undecided. A missing person is only
+ * logged.
+ */
+const repairBrief = (brief: Brief, scenario: Scenario): Brief => {
   const ids = new Set(scenario.messages.map((m) => m.id))
-  const cited = [
-    ...brief.items.flatMap((i) => i.sourceIds),
-    ...brief.conflicts.flatMap((c) => c.events.flatMap((e) => e.sourceIds)),
-  ]
-  const unknown = [...new Set(cited.filter((id) => !ids.has(id)))]
-  if (unknown.length) return `sourceIds cite messages that do not exist: ${unknown.join(', ')}`
-  return null
+  const known = (sourceIds: string[]) => sourceIds.filter((id) => ids.has(id))
+
+  const conflicts = dedupeConflicts(brief.conflicts).map((c) => ({
+    ...c,
+    keep: c.events.some((e) => sameName(e.person, c.keep)) ? c.keep : '',
+    events: c.events.map((e) => ({ ...e, sourceIds: known(e.sourceIds) })),
+  }))
+  const items = brief.items.map((i) => ({ ...i, sourceIds: known(i.sourceIds) }))
+
+  const missing = peopleToCover(scenario).filter((p) => !items.some((i) => sameName(i.person, p)))
+  if (missing.length) console.warn('[brief] no card for', missing)
+  return { ...brief, conflicts, items }
 }
 
 // --- Ollama ---
@@ -217,6 +273,8 @@ const MAX_REPLY_TOKENS = 2000
 
 /** Shared by the warm-up and every request: Ollama reloads the model when num_ctx changes. */
 const CONTEXT_TOKENS = 8192
+
+const REQUEST_OPTIONS = { temperature: 0.2, num_predict: MAX_REPLY_TOKENS, num_ctx: CONTEXT_TOKENS }
 
 /** -1 keeps the model in memory indefinitely, so a demo never waits on a reload. */
 const KEEP_ALIVE = -1
@@ -251,7 +309,7 @@ const callOllama = async (
     keep_alive: KEEP_ALIVE,
     // num_predict caps a runaway reply (an uncapped repetition loop once ran 10 minutes).
     // num_ctx leaves room for the corrective retry conversation.
-    options: { temperature: 0.2, num_predict: MAX_REPLY_TOKENS, num_ctx: CONTEXT_TOKENS },
+    options: REQUEST_OPTIONS,
     format: schema,
     messages,
   }
@@ -290,7 +348,7 @@ const callOllama = async (
       content += chunk.message?.content ?? ''
       chunks++
       if (chunk.done) final = chunk
-      onProgress({ step: writingStep, detail: `${chunks} tokens · ${seconds()}s` })
+      onProgress({ step: writingStep, detail: `${chunks} tokens · ${seconds()}s`, stream: content })
     }
   }
   console.log(`[${label}] response`, { ...(final as object), message: { role: 'assistant', content } })
@@ -310,6 +368,8 @@ const ask = async <T>(opts: {
   onProgress: OnProgress
   /** Progress label while the reply streams in. */
   writingStep: string
+  /** 2 = one retry with the problem explained. */
+  attempts: number
 }): Promise<AskResult<T>> => {
   const messages: ChatMessage[] = [
     { role: 'system', content: opts.system },
@@ -318,7 +378,7 @@ const ask = async <T>(opts: {
 
   let raw = ''
   let problem = ''
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= opts.attempts; attempt++) {
     raw = await callOllama(messages, opts.schema, opts.onProgress, opts.label, opts.writingStep)
     opts.onProgress({ step: 'Checking' })
 
@@ -334,7 +394,7 @@ const ask = async <T>(opts: {
     if (!problem) return { ok: true, value: parsed as T }
 
     console.warn(`[${opts.label}] attempt ${attempt}: ${problem}`)
-    if (attempt === 1) {
+    if (attempt < opts.attempts) {
       opts.onProgress({ step: 'Asking again', detail: problem })
       // A fixable JSON reply goes back with the correction; garbage (a cut-off or looping reply)
       // is dropped and the question simply asked again.
@@ -354,23 +414,78 @@ const ask = async <T>(opts: {
 /** Exactly what step 1 sends the model as the user message (`me` rides in the system prompt). */
 export const briefInput = ({ today, messages }: Scenario) => ({ today, messages })
 
+/** What step 1 sends: instructions, the chats, and the answer schema. Also what the page displays. */
+export const analysisRequest = (scenario: Scenario) => ({
+  system: analysisPrompt(scenario),
+  user: JSON.stringify(briefInput(scenario)),
+  schema: briefSchema(scenario),
+})
+
 /** Step 1: find conflicts, needs and open promises across every conversation. */
-export const analyzeChats = (scenario: Scenario, onProgress: OnProgress = () => {}) =>
-  ask<Brief>({
+export const analyzeChats = async (scenario: Scenario, onProgress: OnProgress = () => {}) => {
+  const result = await ask<Brief>({
     label: 'brief',
-    system: analysisPrompt(scenario),
-    user: JSON.stringify(briefInput(scenario)),
-    schema: BRIEF_SCHEMA,
-    check: (v) => validateBrief(v) ?? checkCoverage(v as Brief, scenario),
+    ...analysisRequest(scenario),
+    // Only an unusable answer (broken or cut-off JSON) is worth a second call; the rest is repaired.
+    check: validateBrief,
     onProgress,
     writingStep: 'Analyzing your chats',
+    // One pass: the schema bounds the answer, and a second pass would double the demo's wait.
+    attempts: 1,
   })
+  return result.ok ? { ...result, value: repairBrief(result.value, scenario) } : result
+}
+
+/**
+ * Has Ollama read the analysis input ahead of time: the same request, capped at one token. When
+ * the real request comes with an identical input, Ollama reuses that reading (its prefix cache),
+ * so the click goes straight to writing.
+ */
+export const primeAnalysis = async (scenario: Scenario): Promise<void> => {
+  const { system, user, schema } = analysisRequest(scenario)
+  const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: OLLAMA_MODEL,
+      stream: false,
+      think: false,
+      keep_alive: KEEP_ALIVE,
+      options: { ...REQUEST_OPTIONS, num_predict: 1 },
+      format: schema,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    }),
+  })
+  if (!res.ok) throw new Error(`Ollama error (${res.status})`)
+}
+
+/** Same people on both sides: the model sometimes reports one clash once from each conversation. */
+const sameParticipants = (a: Conflict, b: Conflict) =>
+  a.events.every((x) => b.events.some((y) => sameName(x.person, y.person))) &&
+  b.events.every((y) => a.events.some((x) => sameName(x.person, y.person)))
+
+const dedupeConflicts = (conflicts: Conflict[]): Conflict[] =>
+  conflicts.filter((c, i) => !conflicts.slice(0, i).some((earlier) => sameParticipants(earlier, c)))
 
 /** Every message in the conversations this person has written in. */
 const conversationsWith = (scenario: Scenario, person: string): BriefMessage[] => {
   const convos = new Set(scenario.messages.filter((m) => sameName(m.from.name, person)).map((m) => m.conversation))
   return scenario.messages.filter((m) => convos.has(m.conversation))
 }
+
+/** What a draft sends: instructions, that person's context, and the answer schema. Also displayed. */
+export const draftRequest = (scenario: Scenario, brief: Brief, item: BriefItem) => ({
+  system: draftPrompt(scenario, item.person, decisionsFor(scenario, brief, item.person)),
+  user: JSON.stringify({
+    today: scenario.today,
+    person: item,
+    messages: conversationsWith(scenario, item.person),
+  }),
+  schema: DRAFT_SCHEMA,
+})
 
 /** Step 2, on demand: draft one reply, bound by the conflict decisions from step 1. */
 export const draftReply = async (
@@ -381,17 +496,11 @@ export const draftReply = async (
 ): Promise<AskResult<string>> => {
   const result = await ask<{ draftReply: string }>({
     label: `draft:${item.person}`,
-    system: draftPrompt(scenario, item.person),
-    user: JSON.stringify({
-      today: scenario.today,
-      person: item,
-      conflictDecisions: brief.conflicts.map((c) => ({ when: c.when, summary: c.summary, decision: c.suggestion })),
-      messages: conversationsWith(scenario, item.person),
-    }),
-    schema: DRAFT_SCHEMA,
+    ...draftRequest(scenario, brief, item),
     check: (v) => (isObj(v) && isStr(v.draftReply) && v.draftReply.trim() ? null : 'draftReply must be a non-empty string'),
     onProgress,
-    writingStep: 'Writing',
+    writingStep: 'Drafting reply',
+    attempts: 2,
   })
   return result.ok ? { ok: true, value: result.value.draftReply.trim() } : result
 }
