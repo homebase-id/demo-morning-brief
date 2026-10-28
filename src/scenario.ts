@@ -1,6 +1,6 @@
 import { GetProfileCard } from '@homebase-id/js-lib/public'
 import { getDotYouClient, getIdentity, hasCredentials } from './auth/auth'
-import { getRecentChatMessages, type ChatMessage } from './brief/chat'
+import { getRecentChatMessages, type ChatConversation, type ChatMessage } from './brief/chat'
 import type { DataSource } from './config'
 import lotr from './fixtures/scenario-lotr.json'
 
@@ -26,6 +26,8 @@ export interface Scenario {
   messages: BriefMessage[]
   /** Live only: short id (m1) → the real chat file, for the "source" links. Never sent to the model. */
   sources?: Record<string, { fileId: string; conversationId: string }>
+  /** Live only: who is in each conversation, so a reply can be sent to it. Never sent to the model. */
+  conversations?: Record<string, ChatConversation>
 }
 
 export type ScenarioErrorKind = 'not-signed-in' | 'no-chats' | 'read-failed'
@@ -135,7 +137,10 @@ const liveScenario = async (): Promise<Scenario> => {
     }),
   )
 
-  return { me, today: localDate(new Date()), messages, sources }
+  const conversations: Scenario['conversations'] = {}
+  for (const m of ordered) if (m.conversation) conversations[m.conversationId] = m.conversation
+
+  return { me, today: localDate(new Date()), messages, sources, conversations }
 }
 
 export const loadScenario = async (source: DataSource): Promise<Scenario> =>

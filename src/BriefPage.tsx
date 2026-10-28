@@ -15,6 +15,8 @@ import {
   type Progress,
   type Urgency,
 } from './brief'
+import { extendPermissionsUrl, getDotYouClient } from './auth/auth'
+import { replyTargetFor, sendChatMessage, SendPermissionError, type ReplyTarget } from './brief/send'
 import { OLLAMA_MODEL, type DataSource } from './config'
 import { loadScenario, ScenarioError, type BriefMessage, type Scenario, type ScenarioErrorKind } from './scenario'
 import './BriefPage.css'
@@ -116,9 +118,16 @@ function ConflictBanner({
   )
 }
 
-function DraftArea({ text }: { text: string }) {
+type SendState = 'idle' | 'confirm' | 'sending' | 'sent' | 'needs-permission' | 'failed'
+
+/**
+ * The editable draft, with Copy and, in live mode, Send. Sending asks for a confirmation first:
+ * it posts a real message to real people.
+ */
+function DraftArea({ text, person, target }: { text: string; person: string; target?: ReplyTarget }) {
   const [draft, setDraft] = useState(text)
   const [copied, setCopied] = useState(false)
+  const [send, setSend] = useState<SendState>('idle')
 
   const copy = async () => {
     await navigator.clipboard.writeText(draft)
@@ -126,15 +135,69 @@ function DraftArea({ text }: { text: string }) {
     setTimeout(() => setCopied(false), 1500)
   }
 
+  const confirmSend = async () => {
+    if (!target) return
+    setSend('sending')
+    try {
+      await sendChatMessage(getDotYouClient(), target, draft.trim())
+      setSend('sent')
+    } catch (e) {
+      setSend(e instanceof SendPermissionError ? 'needs-permission' : 'failed')
+    }
+  }
+
+  const to = target?.conversationName ?? person
   return (
     <>
       <label className="draft">
         <span>Draft reply</span>
-        <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={4} />
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={4}
+          readOnly={send === 'sending' || send === 'sent'}
+        />
       </label>
-      <button type="button" className="secondary" onClick={copy}>
-        {copied ? 'Copied ✓' : 'Copy'}
-      </button>
+      <div className="draft-actions">
+        <button type="button" className="secondary" onClick={copy}>
+          {copied ? 'Copied ✓' : 'Copy'}
+        </button>
+        {target && send === 'idle' && (
+          <button type="button" className="send" onClick={() => setSend('confirm')} disabled={!draft.trim()}>
+            Send to {to}
+          </button>
+        )}
+        {send === 'confirm' && (
+          <>
+            <span className="send-note">Send this to {to} in Homebase Chat?</span>
+            <button type="button" className="secondary" onClick={() => setSend('idle')}>
+              Cancel
+            </button>
+            <button type="button" className="send" onClick={confirmSend}>
+              Confirm send
+            </button>
+          </>
+        )}
+        {send === 'sending' && <span className="send-note">Sending…</span>}
+        {send === 'sent' && <span className="send-done">✓ Sent to {to}</span>}
+      </div>
+      {send === 'needs-permission' && (
+        <p className="brief-error">
+          Morning Brief isn’t allowed to send messages yet.{' '}
+          <a className="secondary" href={extendPermissionsUrl()}>
+            Allow sending
+          </a>{' '}
+          (opens your Homebase, then comes back here; the brief will need to run again).
+        </p>
+      )}
+      {send === 'failed' && (
+        <p className="brief-error">
+          The message couldn’t be sent.{' '}
+          <button type="button" className="link-button" onClick={() => setSend('confirm')}>
+            Try again
+          </button>
+        </p>
+      )}
     </>
   )
 }
@@ -145,6 +208,7 @@ function PersonCard({
   real,
   draft,
   draftPrompt,
+  sendTarget,
   onDraft,
   busy,
 }: {
@@ -152,6 +216,8 @@ function PersonCard({
   messages: BriefMessage[]
   real?: Scenario['sources']
   draftPrompt?: Prompt
+  /** Live only: where a reply to this person would be sent. */
+  sendTarget?: ReplyTarget
   draft?: DraftState
   onDraft: () => void
   busy: boolean
@@ -184,7 +250,9 @@ function PersonCard({
       {draft?.status === 'drafting' && <StatusLog steps={[draft.progress ?? { step: 'Drafting' }]} running />}
       {draft?.status === 'error' && <p className="brief-error">{draft.error}</p>}
       {/* key: a redraft replaces the text even if the old one was edited */}
-      {draft?.status === 'done' && <DraftArea key={draft.text} text={draft.text} />}
+      {draft?.status === 'done' && (
+        <DraftArea key={draft.text} text={draft.text} person={item.person} target={sendTarget} />
+      )}
       {draft && draftPrompt && (
         <PromptView
           prompt={draftPrompt}
@@ -595,6 +663,7 @@ export function BriefPage({
                 real={scenario?.sources}
                 draft={drafts[item.person]}
                 draftPrompt={scenario ? draftRequest(scenario, brief, item) : undefined}
+              sendTarget={source === 'live' && scenario ? replyTargetFor(scenario, item.person) : undefined}
                 onDraft={() => runDrafts(brief, [item])}
                 busy={drafting}
               />

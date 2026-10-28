@@ -9,11 +9,13 @@ import {
 // Chat storage format, as written by chat-kmp (homebase-chat ChatProtocol /
 // MessageAppData / ConversationAppDataJson). The web chat app that used to share
 // this format is retired, so chat-kmp is the reference.
-const ChatDrive: TargetDrive = {
+export const ChatDrive: TargetDrive = {
   alias: '9ff813aff2d61e2f9b9db189e72d1a11',
   type: '66ea8355ae4155c39b5a719166b510e3',
 }
-const MessageFileType = 7878
+export const MessageFileType = 7878
+/** chat-kmp ChatProtocol.ChatAppId: the app a message's push notification is for. */
+export const ChatAppId = '2d781401-3804-4b57-b4aa-d8e4e2ef39f4'
 const ConversationFileType = 8888
 
 /** appData.content of a message file. Long text overflows to the `dflt_key` payload. */

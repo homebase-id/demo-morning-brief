@@ -554,3 +554,58 @@
   gap: 16px;
   align-items: start;
 }
+
+/* --- draft actions: copy, send, confirm --- */
+
+.draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+
+  .secondary {
+    align-self: auto;
+  }
+}
+
+.send {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}
+
+.send-note {
+  font-size: 14px;
+}
+
+.send-done {
+  font-size: 14px;
+  font-weight: 600;
+  color: #16a34a;
+}
+
+.brief-error a.secondary {
+  display: inline-block;
+  text-decoration: none;
+}
+
+.link-button {
+  font: inherit;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}

@@ -1,6 +1,7 @@
 import {
   createEccPair,
   finalizeAuthentication,
+  getExtendAppRegistrationParams,
   getRegistrationParams,
   hasValidToken,
   logout as logoutYouAuth,
@@ -51,7 +52,7 @@ export const login = async (odinId: string) => {
     appDefinition.name,
     appDefinition.id,
     appDefinition.slug,
-    undefined, // permission keys
+    appDefinition.permissionKeys,
     undefined, // circle permission keys
     appDefinition.drives,
     undefined, // circle drives
@@ -88,4 +89,20 @@ export const logout = async () => {
   }
   localStorage.removeItem(APP_SHARED_SECRET)
   localStorage.removeItem(APP_AUTH_TOKEN)
+}
+
+/**
+ * The owner console page that adds this app's current permissions (e.g. sending, added after the
+ * app was first registered) to an existing registration, then returns here.
+ */
+export const extendPermissionsUrl = (): string => {
+  const params = getExtendAppRegistrationParams(
+    appDefinition.id,
+    appDefinition.drives,
+    undefined,
+    appDefinition.permissionKeys,
+    undefined,
+    window.location.origin + '/',
+  )
+  return `https://${retrieveIdentity()}/owner/appupdate?${stringifyToQueryParams(params)}`
 }
