@@ -1,0 +1,12 @@
+{
+  "me": { "name": "Frodo", "id": "frodo-baggins.me" },
+  "today": "2026-10-28",
+  "messages": [
+    { "id": "m1", "channel": "chat", "conversation": "Gandalf", "from": { "name": "Gandalf", "id": "gandalf-grey.me" }, "sentAt": "2026-10-25T21:14:00-05:00", "text": "Frodo. We must speak, and not by letter. Meet me at the Prancing Pony in Bree, Friday at dusk. Come alone, and tell no one where you're going." },
+    { "id": "m2", "channel": "chat", "conversation": "Gandalf", "from": { "name": "Frodo", "id": "frodo-baggins.me" }, "sentAt": "2026-10-25T21:20:00-05:00", "text": "I'll be there. Friday at dusk." },
+    { "id": "m3", "channel": "chat", "conversation": "Sam", "from": { "name": "Sam", "id": "samwise.me" }, "sentAt": "2026-10-26T10:02:00-05:00", "text": "Mr. Frodo! The Gaffer's having his birthday supper Friday at six. Rosie's baking her seed cake. You promised you'd come this year, remember? 🎂" },
+    { "id": "m4", "channel": "chat", "conversation": "Sam", "from": { "name": "Frodo", "id": "frodo-baggins.me" }, "sentAt": "2026-10-26T10:15:00-05:00", "text": "Wouldn't miss it, Sam. I'll bring the map of the Shire for your dad." },
+    { "id": "m5", "channel": "chat", "conversation": "Gandalf", "from": { "name": "Gandalf", "id": "gandalf-grey.me" }, "sentAt": "2026-10-28T06:48:00-05:00", "text": "And Frodo, bring the item from Bilbo's mantelpiece. Keep it in your pocket and don't take it out." },
+    { "id": "m6", "channel": "chat", "conversation": "Sam", "from": { "name": "Sam", "id": "samwise.me" }, "sentAt": "2026-10-28T07:31:00-05:00", "text": "Rosie wants a headcount by noon. Still coming Friday?" }
+  ]
+}
