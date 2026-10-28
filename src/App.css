@@ -260,26 +260,15 @@
   color: var(--text-h);
 }
 
-.source-toggle {
-  display: inline-flex;
+.source-select {
+  font: inherit;
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: 6px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  overflow: hidden;
-
-  button {
-    font: inherit;
-    font-size: 14px;
-    padding: 4px 14px;
-    border: none;
-    background: transparent;
-    color: var(--text);
-    cursor: pointer;
-  }
-
-  button[aria-pressed='true'] {
-    background: var(--accent);
-    color: #fff;
-  }
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
 }
 
 .app-title {

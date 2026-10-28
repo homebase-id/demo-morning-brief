@@ -215,6 +215,9 @@ const checkCoverage = (brief: Brief, scenario: Scenario): string | null => {
 
 const MAX_REPLY_TOKENS = 2000
 
+/** Shared by the warm-up and every request: Ollama reloads the model when num_ctx changes. */
+const CONTEXT_TOKENS = 8192
+
 /** -1 keeps the model in memory indefinitely, so a demo never waits on a reload. */
 const KEEP_ALIVE = -1
 
@@ -225,7 +228,7 @@ export const warmModel = async (): Promise<void> => {
   const res = await fetch(`${OLLAMA_URL}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: OLLAMA_MODEL, keep_alive: KEEP_ALIVE }),
+    body: JSON.stringify({ model: OLLAMA_MODEL, keep_alive: KEEP_ALIVE, options: { num_ctx: CONTEXT_TOKENS } }),
   })
   if (!res.ok) throw new Error(`Ollama error (${res.status}): ${(await res.json().catch(() => null))?.error ?? res.statusText}`)
 }
@@ -239,6 +242,7 @@ const callOllama = async (
   schema: object,
   onProgress: OnProgress,
   label: string,
+  writingStep: string,
 ): Promise<string> => {
   const request = {
     model: OLLAMA_MODEL,
@@ -247,7 +251,7 @@ const callOllama = async (
     keep_alive: KEEP_ALIVE,
     // num_predict caps a runaway reply (an uncapped repetition loop once ran 10 minutes).
     // num_ctx leaves room for the corrective retry conversation.
-    options: { temperature: 0.2, num_predict: MAX_REPLY_TOKENS, num_ctx: 8192 },
+    options: { temperature: 0.2, num_predict: MAX_REPLY_TOKENS, num_ctx: CONTEXT_TOKENS },
     format: schema,
     messages,
   }
@@ -286,7 +290,7 @@ const callOllama = async (
       content += chunk.message?.content ?? ''
       chunks++
       if (chunk.done) final = chunk
-      onProgress({ step: 'Writing', detail: `${chunks} tokens · ${seconds()}s` })
+      onProgress({ step: writingStep, detail: `${chunks} tokens · ${seconds()}s` })
     }
   }
   console.log(`[${label}] response`, { ...(final as object), message: { role: 'assistant', content } })
@@ -304,6 +308,8 @@ const ask = async <T>(opts: {
   schema: object
   check: (parsed: unknown) => string | null
   onProgress: OnProgress
+  /** Progress label while the reply streams in. */
+  writingStep: string
 }): Promise<AskResult<T>> => {
   const messages: ChatMessage[] = [
     { role: 'system', content: opts.system },
@@ -313,7 +319,7 @@ const ask = async <T>(opts: {
   let raw = ''
   let problem = ''
   for (let attempt = 1; attempt <= 2; attempt++) {
-    raw = await callOllama(messages, opts.schema, opts.onProgress, opts.label)
+    raw = await callOllama(messages, opts.schema, opts.onProgress, opts.label, opts.writingStep)
     opts.onProgress({ step: 'Checking' })
 
     let parsed: unknown
@@ -357,6 +363,7 @@ export const analyzeChats = (scenario: Scenario, onProgress: OnProgress = () => 
     schema: BRIEF_SCHEMA,
     check: (v) => validateBrief(v) ?? checkCoverage(v as Brief, scenario),
     onProgress,
+    writingStep: 'Analyzing your chats',
   })
 
 /** Every message in the conversations this person has written in. */
@@ -384,6 +391,7 @@ export const draftReply = async (
     schema: DRAFT_SCHEMA,
     check: (v) => (isObj(v) && isStr(v.draftReply) && v.draftReply.trim() ? null : 'draftReply must be a non-empty string'),
     onProgress,
+    writingStep: 'Writing',
   })
   return result.ok ? { ok: true, value: result.value.draftReply.trim() } : result
 }

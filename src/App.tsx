@@ -67,15 +67,17 @@ function useHomebaseAuth() {
   return { state, error, signOut, needSignIn: () => setState('anonymous') }
 }
 
-function SourceToggle({ source, onChange }: { source: DataSource; onChange: (s: DataSource) => void }) {
+function SourceSelect({ source, onChange }: { source: DataSource; onChange: (s: DataSource) => void }) {
   return (
-    <div className="source-toggle" role="group" aria-label="Data source">
-      {(['mock', 'live'] as const).map((s) => (
-        <button key={s} type="button" aria-pressed={source === s} onClick={() => onChange(s)}>
-          {s === 'mock' ? 'Mock' : 'Live'}
-        </button>
-      ))}
-    </div>
+    <select
+      className="source-select"
+      aria-label="Data source"
+      value={source}
+      onChange={(e) => onChange(e.target.value as DataSource)}
+    >
+      <option value="mock">Mock</option>
+      <option value="live">Live</option>
+    </select>
   )
 }
 
@@ -136,7 +138,7 @@ function App() {
       <header className="app-header">
         <div className="header-left">
           <strong className="app-title">Morning Brief</strong>
-          <SourceToggle source={source} onChange={choose} />
+          <SourceSelect source={source} onChange={choose} />
         </div>
         {identity && <IdentityBadge odinId={identity} onSignOut={auth.signOut} />}
       </header>
